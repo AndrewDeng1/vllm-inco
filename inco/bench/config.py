@@ -15,12 +15,15 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-# Powers of two to 64. Measured KV capacity at ISL+OSL=1280 with the cache
-# pinned to 12GiB is ~102 resident requests, so 64 leaves headroom; every value
-# is also a captured CUDA graph size, so no point pays padding. Extend to 96 if
-# tokens/s/gpu is still climbing at 64 -- a later run merges into the same
-# curve, since results are collected from disk by label.
-DEFAULT_CONCURRENCIES: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
+# Powers of two to 16, then steps of 8 to 80. The KV cache is pinned to 12GiB
+# (131,072 tokens), so at ISL+OSL=1536 the engine holds 85 resident requests
+# and 80 is the largest captured CUDA graph size that fits -- above it a point
+# measures the scheduler queue, below it no point pays graph padding. A later
+# run merges into the same curve, since results are collected from disk by
+# label.
+DEFAULT_CONCURRENCIES: tuple[int, ...] = (
+    1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80
+)
 
 INCO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ARTIFACT_ROOT = str(INCO_ROOT / "results")
@@ -86,15 +89,16 @@ def _from_env(cls):
 class Workload:
     """The precise workload under test.
 
-    Defaults describe a mid-length single-turn chat workload: 1024 input
-    tokens, 256 output tokens, streaming, against Qwen3-30B-A3B-Instruct
-    (a 30.5B-total / 3.3B-active MoE) in bf16 on a single 80GB H100.
+    Defaults describe short-form code generation -- coding autocomplete or a
+    short edit: 1024 input tokens, 512 output tokens, streaming, against
+    Qwen3-30B-A3B-Instruct (a 30.5B-total / 3.3B-active MoE) in bf16 on a
+    single 80GB H100.
     """
 
     model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     tokenizer: str | None = None
     isl: int = 1024
-    osl: int = 256
+    osl: int = 512
     isl_stddev: int = 0
     osl_stddev: int = 0
     endpoint_type: str = "chat"

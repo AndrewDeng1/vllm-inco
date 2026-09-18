@@ -151,7 +151,7 @@ class TestKvCapacityReport:
         assert audit_against(make_server_info()) is not None
         out = capsys.readouterr().out
         assert "76,000 tokens" in out
-        assert "59 resident requests at ISL+OSL=1280" in out
+        assert "49 resident requests at ISL+OSL=1536" in out
 
     def test_sweep_beyond_capacity_is_flagged(self, audit_against, capsys):
         audit_against(

@@ -102,7 +102,7 @@ class TestFullSweep:
 
         manifest = json.loads((gpu.run_dir / "manifest.json").read_text())
         assert len(manifest["commands"]) == 3
-        assert manifest["workload"]["osl"] == 256
+        assert manifest["workload"]["osl"] == 512
         assert (
             manifest["server_info"]["vllm_config"]["scheduler_config"][
                 "async_scheduling"
