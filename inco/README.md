@@ -75,13 +75,10 @@ comparing two runs.
 
 # Experiments
 
-Prefix for every command:
-
-```bash
-R=/path/to/vllm-inco          # repo root
-M="$R/.venv/bin/modal"        # modal CLI
-P=/artifacts/pruned/Qwen3-30B-A3B-Instruct-2507/evol-codealpaca-v1/pruned_models/layerwise_reap-renorm_true-seed_42-0.50
-```
+Every experiment below is one script in `inco/scripts/experiments/`. They take no
+arguments, resolve their own paths, and forward any extra flags to the
+underlying Modal entrypoint. Shared paths (repo root, `modal` CLI, the pruned
+checkpoint) live in `experiments/_env.sh`.
 
 Modal volumes: `inco-results` (sweeps), `inco-reap` (checkpoints, evals,
 probes), `inco-spec` (drafters).
@@ -89,10 +86,11 @@ probes), `inco-spec` (drafters).
 ## Setup (once)
 
 ```bash
-uv venv --python 3.12 && source .venv/bin/activate
-uv pip install modal && modal setup                      # browser OAuth
-$M run $R/inco/modal/modal_baseline.py::prefetch         # cache 61GB of weights
+bash inco/scripts/experiments/0-setup.sh
 ```
+
+Creates the venv, authenticates Modal (browser OAuth), clones the two
+gitignored dependencies, and caches 61GB of weights.
 
 Server and client share one container, so aiperf measures the engine rather
 than the network. The image installs **this fork** via
@@ -102,12 +100,6 @@ flags that only exist in this tree.
 `inco/reap/` and `inco/speculators/` are gitignored clones. Each needs its own
 virtualenv — both install their *own* vLLM and would otherwise overwrite the
 engine under test.
-
-```bash
-cd $R/inco
-git clone https://github.com/CerebrasResearch/reap.git
-git clone https://github.com/vllm-project/speculators.git
-```
 
 On a bare-metal GPU host instead of Modal: `bash inco/scripts/install.sh`, then
 `serve_baseline.sh` in one terminal and `run_baseline.sh` in another.
@@ -125,9 +117,7 @@ max batch 131,072 / 1,536    =      85.3
 85 is the ceiling; concurrency steps by 8, so the sweep caps at 80.
 
 ```bash
-$M run $R/inco/modal/modal_baseline.py \
-  --label chat-1024-512 --isl 1024 --osl 512 \
-  --concurrencies "1,2,4,8,16,24,32,40,48,56,64,72,80" --max-num-seqs 80
+bash inco/scripts/experiments/1-baseline.sh
 ```
 
 ~19 min. Defaults are this workload, so a bare `modal run modal_baseline.py`
@@ -154,13 +144,7 @@ Two observations drive everything after this:
 batch-independent by construction. Same ISL/OSL, same GPU, as a control.
 
 ```bash
-$M run $R/inco/modal/modal_baseline.py \
-  --label dense-4b-unpinned-1024-512 --model Qwen/Qwen3-4B-Instruct-2507 \
-  --isl 1024 --osl 512 --kv-cache-gib 0 --max-num-seqs 256 \
-  --concurrencies "1,2,4,8,16,24,32,40,48,56,64,72,80,96,112,128,160,192,224,256"
-
-$M volume get inco-results dense-4b-unpinned-1024-512 ./inco/results
-cd $R/inco && python scripts/plot_moe_vs_dense_ratio.py
+bash inco/scripts/experiments/2-dense-control.sh
 # -> results/moe-vs-dense-ratio-plots/moe-vs-dense-ratio.png
 ```
 
@@ -182,9 +166,7 @@ At 256 tokens/request there is far more room for KV cache, so the plateau
 becomes visible.
 
 ```bash
-$M run $R/inco/modal/modal_baseline.py \
-  --label short-128-128-v2 --isl 128 --osl 128 \
-  --concurrencies "1,2,4,8,16,32,64,128,192,256,320,384,448" --max-num-seqs 448
+bash inco/scripts/experiments/2b-short-shape.sh
 ```
 
 Diminishing returns from **BS ≈ 320**, saturating at **~11,000 tok/s/gpu**.
@@ -213,8 +195,7 @@ layer the bottom X% are deleted along with their columns in the router matrix.
 is short-form code generation.
 
 ```bash
-$M run $R/inco/modal/modal_reap.py --compression-ratio 0.5 \
-  --batches-per-category 128 --batch-size 8 --model-max-length 2048
+bash inco/scripts/experiments/3-reap-prune.sh
 ```
 
 ~90 min: ~109 s per decoder block x 48 blocks of calibration, plus a model
@@ -234,10 +215,7 @@ tensor of 128 experts per layer. Pruning consumes only the per-layer ranking,
 so the dump is the whole decision and plots without a GPU.
 
 ```bash
-$M volume get inco-reap \
-  pruned/Qwen3-30B-A3B-Instruct-2507/evol-codealpaca-v1/layerwise/observations_1024_cosine-seed_42.pt \
-  ./inco/results/saliency/
-cd $R/inco && python scripts/plot_reap_saliency.py
+bash inco/scripts/experiments/3a-saliency.sh
 # -> results/saliency/reap-saliency-heatmap.png  (4 panels)
 ```
 
@@ -282,13 +260,7 @@ Freed weight memory does **not** become KV automatically — re-pin it:
 ### 3c. Impact on throughput
 
 ```bash
-$M run $R/inco/modal/modal_baseline.py \
-  --label reap50-1024-512 --served-model-name reap50 --model $P \
-  --isl 1024 --osl 512 --kv-cache-gib 38 --max-num-seqs 256 \
-  --concurrencies "1,2,4,8,16,24,32,40,48,56,64,72,80,96,128,160,192,224,256"
-
-$M volume get inco-results reap50-1024-512 ./inco/results
-cd $R/inco && python -m bench.compare chat-1024-512 reap50-1024-512
+bash inco/scripts/experiments/3c-reap-sweep.sh
 ```
 
 Same GPU model (H100 80GB HBM3) as the baseline, zero integrity warnings, zero
@@ -316,12 +288,7 @@ So the 2x is mostly capacity, not speed.
 ### 3d. Why the speed gain only appears at large batch
 
 ```bash
-$M run $R/inco/modal/modal_reap.py::expert_activation \
-  --model Qwen/Qwen3-30B-A3B-Instruct-2507
-$M run $R/inco/modal/modal_reap.py::expert_activation --model $P
-
-$M volume get inco-reap experts ./inco/results/experts
-cd $R/inco && python scripts/plot_expert_activation.py
+bash inco/scripts/experiments/3d-expert-activation.sh
 # -> results/experts/expert-activation.png
 ```
 
@@ -365,22 +332,8 @@ suites — lm-eval's `humaneval`/`mbpp_plus` do none of these and understate an
 instruct model badly). MC via lm-eval, 0-shot, seed 42, `acc_norm`.
 
 ```bash
-B=Qwen/Qwen3-30B-A3B-Instruct-2507
-
-for MODEL in "$B" "$P"; do
-  for D in humaneval mbpp; do                       # one dataset per call:
-    $M run --detach $R/inco/modal/modal_reap.py::evalplus_eval \
-      --model "$MODEL" --dataset $D --greedy        # two would OOM one container
-  done
-  $M run --detach $R/inco/modal/modal_reap.py::evaluate \
-    --model "$MODEL" --tasks rte,openbookqa,winogrande,arc_challenge
-done
-
-$M volume get inco-reap evalplus ./inco/results/evalplus
-$M volume get inco-reap evals ./inco/results/evals
-cd $R/inco && python -m bench.eval_compare \
-  Qwen3-30B-A3B-Instruct-2507 layerwise_reap-renorm_true-seed_42-0.50 \
-  --eval-root results/evals/evals
+bash inco/scripts/experiments/3f-evals.sh         # detached; one dataset per container
+bash inco/scripts/experiments/3f-evals-report.sh  # once they finish
 ```
 
 | domain | benchmark | unpruned | REAP 50% | delta | verdict |
@@ -419,7 +372,7 @@ pruning modifies the output distribution, so a drafter trained on the dense
 model's completions predicts the wrong model.
 
 ```bash
-$M run --detach $R/inco/modal/modal_speculators.py --label dflash2-reap50-code-5k
+bash inco/scripts/experiments/4-train-drafter.sh
 ```
 
 ~65 min: ~19 min regenerating responses, a few minutes of data prep and
@@ -438,12 +391,8 @@ vLLM wants the *drafter* checkpoint as the served model: a speculators config
 makes it swap in `verifier.name_or_path` and derive `method=dflash`.
 
 ```bash
-$M run --detach $R/inco/modal/modal_speculators.py::acceptance --label specdec-reap50-v5
-
-$M volume get inco-spec specdec-reap50-v5 ./inco/results/spec
-cd $R/inco && python -m bench.plot_specdec \
-  results/spec/results-reap-v5.json results/spec/results-unpruned-v5.json \
-  --labels "REAP-50%,unpruned"
+bash inco/scripts/experiments/4a-acceptance.sh
+bash inco/scripts/experiments/4-specdec-report.sh  # plots this against §4b
 ```
 
 Eval protocol: temperature 0; warmup 16 per concurrency point; 128 prompts per
@@ -494,13 +443,8 @@ including its own on-policy data generation, so each draft sees the
 distribution of the model it will predict.
 
 ```bash
-$M run --detach $R/inco/modal/modal_speculators.py \
-  --label dflash2-dense-code-5k --model Qwen/Qwen3-30B-A3B-Instruct-2507
-
-$M run --detach $R/inco/modal/modal_speculators.py::acceptance \
-  --label specdec-dense-v5 --model Qwen/Qwen3-30B-A3B-Instruct-2507 \
-  --drafter /spec/dflash2-dense-code-5k/checkpoints/4 \
-  --kv-cache-gib 10 --gpu-memory-utilization 0.92
+bash inco/scripts/experiments/4b-train-dense-drafter.sh
+bash inco/scripts/experiments/4b-acceptance-dense.sh  # after training completes
 ```
 
 Validation expected acceptance length, per epoch
@@ -571,7 +515,9 @@ inco/
 │   ├── modal_baseline.py     serve + sweep on one Modal H100
 │   ├── modal_reap.py         prune, EvalPlus, lm-eval, expert-activation probe
 │   └── modal_speculators.py  DFlash2 training pipeline + acceptance A/B
-├── scripts/             workload.env, serve/run/install, the three plot scripts
+├── scripts/
+│   ├── experiments/     one script per experiment in this README
+│   └── ...              workload.env, serve/run/install, the three plot scripts
 ├── tests/               pytest suite, no GPU required
 └── results/             generated artifacts (gitignored)
 ```
@@ -586,8 +532,8 @@ server, so parsing, the audit gate, failure handling, the Pareto math, eval
 comparison and the plotting code are all covered.
 
 ```bash
-cd inco && python -m pytest tests -q --cov=bench --cov-report=term-missing
-# 342 passed, 97% statement coverage on bench/
+bash inco/scripts/experiments/test.sh
+# 97% statement coverage on bench/
 ```
 
 ## Tools used
