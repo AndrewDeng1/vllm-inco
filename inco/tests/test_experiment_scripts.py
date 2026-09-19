@@ -67,6 +67,40 @@ def test_env_resolves_repo_paths(tmp_path):
     assert modal == repo / ".venv" / "bin" / "modal"
 
 
+def _mount_for(module: str) -> str:
+    """Where `module` mounts the inco-reap volume."""
+    src = (INCO_DIR / "modal" / module).read_text()
+    mounts = [m for m in ('"/reap"', '"/artifacts"') if m in src]
+    assert len(mounts) == 1, f"{module} mounts inco-reap at {mounts}"
+    return mounts[0].strip('"')
+
+
+SERVED = [s for s in SCRIPTS if "PRUNED" in s.read_text()]
+
+
+@pytest.mark.parametrize("script", SERVED, ids=lambda p: p.name)
+def test_pruned_path_matches_the_entrypoint_mount(script):
+    """inco-reap mounts at /reap in some apps and /artifacts in others; a
+    script must use the path its own entrypoint will see, or vLLM reads the
+    checkpoint as a Hub repo id and the run dies at server start."""
+    body = script.read_text()
+    module = re.search(r"modal_(\w+)\.py", body).group(0)
+    expected = _mount_for(module)
+    var = "PRUNED_ARTIFACTS" if expected == "/artifacts" else "PRUNED"
+    used = set(re.findall(r"\$(PRUNED_ARTIFACTS|PRUNED)\b", body))
+
+    assert used == {var}, (
+        f"{script.name} calls {module}, which mounts inco-reap at "
+        f"{expected}, so it must use ${var} -- found {sorted(used)}"
+    )
+
+
+def test_both_pruned_paths_are_defined():
+    env = (EXP_DIR / "_env.sh").read_text()
+    assert 'PRUNED="/reap/' in env
+    assert 'PRUNED_ARTIFACTS="/artifacts/' in env
+
+
 def test_env_is_not_executable():
     """_env.sh is sourced; marking it runnable invites running it."""
     assert not os.access(EXP_DIR / "_env.sh", os.X_OK)

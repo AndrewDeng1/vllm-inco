@@ -54,6 +54,16 @@ def _git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", REPO_ROOT, *args], text=True).strip()
 
 
+def _wheel_version(commit: str) -> str | None:
+    """The published nightly version for `commit`, or None if there is none."""
+    meta = f"https://wheels.vllm.ai/{commit}/{CUDA_VARIANT}/vllm/metadata.json"
+    try:
+        with urllib.request.urlopen(meta, timeout=15) as resp:
+            return json.loads(resp.read())[0]["version"]
+    except Exception:
+        return None
+
+
 def _fork_build_env() -> dict[str, str]:
     """Resolve what setup.py normally reads out of `.git`.
 
@@ -62,24 +72,31 @@ def _fork_build_env() -> dict[str, str]:
     derive a version (setuptools-scm) or find a matching prebuilt wheel, so
     both are pinned here.
 
-    The wheel is pinned to this checkout's merge-base with `origin/main`, not
-    to HEAD: nightly wheels only exist for upstream commits, so once you start
-    committing your own changes HEAD will not have one. The merge-base wheel
-    supplies kernels for the last upstream commit you branched from, and your
-    Python changes are layered on top by the editable install.
+    The wheel is pinned to the newest ancestor of HEAD that has a published
+    nightly, not to HEAD. Nightlies exist only for upstream commits, and
+    `origin` is the fork, so every commit on this main lacks one. Walking back
+    lands on the upstream commit the work branched from, and also survives a
+    nightly ageing out of the index. Your Python changes are layered on top by
+    the editable install. Set INCO_WHEEL_COMMIT to pin one explicitly.
     """
-    base = _git("merge-base", "HEAD", "origin/main")
-    meta = f"https://wheels.vllm.ai/{base}/{CUDA_VARIANT}/vllm/metadata.json"
-    try:
-        with urllib.request.urlopen(meta, timeout=30) as resp:
-            version = json.loads(resp.read())[0]["version"]
-    except Exception as exc:
+    pinned = os.environ.get("INCO_WHEEL_COMMIT")
+    depth = int(os.environ.get("INCO_WHEEL_SEARCH_DEPTH", "100"))
+    candidates = [pinned] if pinned else _git(
+        "rev-list", f"--max-count={depth}", "HEAD"
+    ).split()
+
+    for base in candidates:
+        version = _wheel_version(base)
+        if version:
+            break
+    else:
         raise RuntimeError(
-            f"no {CUDA_VARIANT} nightly wheel for upstream base commit {base}\n"
-            f"  ({meta}: {exc})\n"
-            "Fetch upstream main so merge-base resolves to a commit with a "
-            "published wheel, or set INCO_CUDA_VARIANT."
-        ) from exc
+            f"no {CUDA_VARIANT} nightly wheel for HEAD or its "
+            f"{len(candidates)} nearest ancestors\n"
+            "  Fetch upstream vllm-project/vllm so an ancestor with a "
+            "published wheel is reachable, or set INCO_WHEEL_COMMIT / "
+            "INCO_CUDA_VARIANT."
+        )
 
     print(f"[modal] precompiled {CUDA_VARIANT} wheel {version} (base {base[:9]})")
     return {

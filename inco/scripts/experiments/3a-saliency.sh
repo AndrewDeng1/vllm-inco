@@ -3,6 +3,10 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
+# The dump is a .pt, so this one plot needs torch. Installed on demand rather
+# than in requirements.txt, matching the deferred import in the plot script.
+"$PY" -c "import torch" 2>/dev/null || uv pip install --python "$PY" torch
+
 get inco-reap \
   pruned/Qwen3-30B-A3B-Instruct-2507/evol-codealpaca-v1/layerwise/observations_1024_cosine-seed_42.pt \
   "$INCO/results/saliency/"

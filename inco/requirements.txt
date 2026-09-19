@@ -4,3 +4,5 @@ aiperf>=0.2.0
 matplotlib>=3.8
 pytest>=8.0
 pytest-cov>=5.0
+# torch is NOT listed: only scripts/plot_reap_saliency.py needs it, to read
+# the observer .pt dump. scripts/experiments/3a-saliency.sh installs it then.

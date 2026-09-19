@@ -117,15 +117,32 @@ def _git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", REPO_ROOT, *args], text=True).strip()
 
 
+def _wheel_version(commit: str) -> str | None:
+    meta = f"https://wheels.vllm.ai/{commit}/{CUDA_VARIANT}/vllm/metadata.json"
+    try:
+        with urllib.request.urlopen(meta, timeout=15) as resp:
+            return json.loads(resp.read())[0]["version"]
+    except Exception:
+        return None
+
+
 def _fork_build_env() -> dict[str, str]:
     """Pin the precompiled wheel, as modal_baseline.py does. See its docstring."""
-    base = _git("merge-base", "HEAD", "origin/main")
-    meta = f"https://wheels.vllm.ai/{base}/{CUDA_VARIANT}/vllm/metadata.json"
-    try:
-        with urllib.request.urlopen(meta, timeout=30) as resp:
-            version = json.loads(resp.read())[0]["version"]
-    except Exception as exc:
-        raise RuntimeError(f"no {CUDA_VARIANT} wheel for base {base}: {exc}") from exc
+    pinned = os.environ.get("INCO_WHEEL_COMMIT")
+    depth = int(os.environ.get("INCO_WHEEL_SEARCH_DEPTH", "100"))
+    candidates = [pinned] if pinned else _git(
+        "rev-list", f"--max-count={depth}", "HEAD"
+    ).split()
+
+    for base in candidates:
+        version = _wheel_version(base)
+        if version:
+            break
+    else:
+        raise RuntimeError(
+            f"no {CUDA_VARIANT} nightly wheel for HEAD or its "
+            f"{len(candidates)} nearest ancestors"
+        )
     print(f"[modal] precompiled {CUDA_VARIANT} wheel {version} (base {base[:9]})")
     return {
         "VLLM_PRECOMPILED_WHEEL_COMMIT": base,

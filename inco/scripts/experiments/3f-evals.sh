@@ -4,7 +4,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
-for model in "$BASE" "$PRUNED"; do
+for model in "$BASE" "$PRUNED_ARTIFACTS"; do
   for dataset in humaneval mbpp; do  # one per call; two would OOM one container
     "$M" run --detach "$INCO/modal/modal_reap.py::evalplus_eval" \
       --model "$model" --dataset "$dataset" --greedy
